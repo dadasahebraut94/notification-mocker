@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type SmartPingAPIResponse struct {
@@ -22,6 +24,9 @@ type SmartPingAPIResponse struct {
 var callbackURL string
 
 func main() {
+
+	// load .env file (for local development)
+	godotenv.Load()
 
 	rand.Seed(time.Now().UnixNano())
 
@@ -39,9 +44,9 @@ func main() {
 
 	http.HandleFunc("/fe/api/v1/send", handleSendSMS)
 
-	log.Printf("🧪 Mockerservice started")
-	log.Printf("🚀 Listening on port: %s", port)
-	log.Printf("📡 Callback URL: %s", callbackURL)
+	log.Println("🧪 Mockerservice started")
+	log.Println("🚀 Listening on port:", port)
+	log.Println("📡 Callback URL:", callbackURL)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
@@ -56,11 +61,11 @@ func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	text := query.Get("text")
 	dltContentId := query.Get("dltContentId")
 
-	log.Printf("📥 Send Request Received")
-	log.Printf("   username=%s", username)
-	log.Printf("   to=%s", to)
-	log.Printf("   from=%s", from)
-	log.Printf("   dltContentId=%s", dltContentId)
+	log.Println("📥 Send Request Received")
+	log.Println("username:", username)
+	log.Println("to:", to)
+	log.Println("from:", from)
+	log.Println("dltContentId:", dltContentId)
 
 	// generate random transaction ID
 	txnID := rand.Int63n(9000000000) + 1000000000
@@ -99,7 +104,7 @@ func simulateCallback(txnID int64, to, from, text string) {
 
 	fullURL := callbackURL + "?" + params.Encode()
 
-	log.Printf("📡 Callback URL: %s", fullURL)
+	log.Println("📡 Callback URL:", fullURL)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -107,10 +112,10 @@ func simulateCallback(txnID int64, to, from, text string) {
 
 	resp, err := client.Get(fullURL)
 	if err != nil {
-		log.Printf("❌ Callback failed: %v", err)
+		log.Println("❌ Callback failed:", err)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("✅ Callback completed: %s", resp.Status)
+	log.Println("✅ Callback completed:", resp.Status)
 }
