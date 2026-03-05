@@ -43,12 +43,17 @@ func main() {
 	}
 
 	http.HandleFunc("/fe/api/v1/send", handleSendSMS)
+	http.HandleFunc("/health", healthHandler)
 
 	log.Println("🧪 Mockerservice started")
 	log.Println("🚀 Listening on port:", port)
 	log.Println("📡 Callback URL:", callbackURL)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
 }
 
 func handleSendSMS(w http.ResponseWriter, r *http.Request) {
