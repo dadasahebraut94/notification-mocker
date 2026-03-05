@@ -101,11 +101,12 @@ func simulateCallback(txnID int64, to, from, text string) {
 	params.Set("txid", fmt.Sprintf("%d", txnID))
 	params.Set("to", to)
 	params.Set("from", from)
-	params.Set("description", "DELIVERED")
-	params.Set("pdu", "1")
 	params.Set("text", text)
-	params.Set("deliverystatus", "DELIVERY_SUCCESS")
+	params.Set("pdu", "1")
 	params.Set("deliverydt", time.Now().Format("2006-01-02 15:04:05"))
+
+	params.Set("description", "UNDELIVERED")
+	params.Set("deliverystatus", "DELIVERY_FAILURE")
 
 	fullURL := callbackURL + "?" + params.Encode()
 
