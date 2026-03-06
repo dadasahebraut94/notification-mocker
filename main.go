@@ -29,9 +29,19 @@ type CallbackJob struct {
 }
 
 var (
-	callbackURL   string
-	callbackQueue = make(chan CallbackJob, 1000000) // Buffer for 1M jobs
-	numWorkers    = 500                             // Number of concurrent workers
+	callbackURL    string
+	jobQueue       = make(chan CallbackJob, 1_000_000) // All incoming jobs
+	readyQueue     = make(chan CallbackJob, 10_000)    // Jobs ready to be sent after jitter
+	numSleepers    = 20_000                            // High number of goroutines for parallel sleep
+	numHTTPWorkers = 1000                              // Controlled number of concurrent HTTP connections
+	httpClient     = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        1000,
+			MaxIdleConnsPerHost: 500,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 )
 
 func main() {
@@ -52,15 +62,20 @@ func main() {
 		callbackURL = "http://localhost:5002/api/v1/o/sms/status/smart-ping"
 	}
 
-	// Start worker pool
-	for i := 1; i <= numWorkers; i++ {
-		go worker(i)
+	// 1. Start HTTP Workers (The ones doing the real network work)
+	for i := 1; i <= numHTTPWorkers; i++ {
+		go httpWorker(i)
+	}
+
+	// 2. Start Sleeper Workers (The ones handling the jitter delay)
+	for i := 1; i <= numSleepers; i++ {
+		go sleeperWorker(i)
 	}
 
 	http.HandleFunc("/fe/api/v1/send", handleSendSMS)
 	http.HandleFunc("/health", healthHandler)
 
-	log.Printf("🧪 Mockerservice started with %d workers\n", numWorkers)
+	log.Printf("🧪 Mockerservice started with %d sleepers and %d http workers\n", numSleepers, numHTTPWorkers)
 	log.Println("🚀 Listening on port:", port)
 	log.Println("📡 Callback URL:", callbackURL)
 
@@ -72,8 +87,27 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-func worker(id int) {
-	for job := range callbackQueue {
+// sleeperWorker waits for jitter without blocking the HTTP workers
+func sleeperWorker(id int) {
+	for job := range jobQueue {
+		// Random jitter range: 0 to 300 seconds
+		jitter := time.Duration(rand.Intn(300)) * time.Second
+		time.Sleep(jitter)
+
+		// Move job to readyQueue after sleep
+		select {
+		case readyQueue <- job:
+			// Job is now ready for HTTP worker
+		default:
+			// If readyQueue is full, this sleeper blocks, effectively providing backpressure
+			readyQueue <- job
+		}
+	}
+}
+
+// httpWorker handles the actual network communication
+func httpWorker(id int) {
+	for job := range readyQueue {
 		processCallback(job)
 	}
 }
@@ -100,22 +134,23 @@ func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 
-	// Queue the callback job
-	callbackQueue <- CallbackJob{
+	// Queue the job for jitter processing (Non-blocking)
+	job := CallbackJob{
 		TxnID: txnID,
 		To:    to,
 		From:  from,
 		Text:  text,
 	}
+
+	select {
+	case jobQueue <- job:
+		// Queued successfully
+	default:
+		log.Printf("⚠️ Global Queue full, dropping job for txnID=%d", txnID)
+	}
 }
 
 func processCallback(job CallbackJob) {
-	// Add random jitter to spread the load (0 to 300 seconds as requested)
-	jitter := time.Duration(rand.Intn(300)) * time.Second
-	time.Sleep(jitter)
-
-	log.Printf("🕒 Triggering callback for txnID=%d (jitter: %v)", job.TxnID, jitter)
-
 	params := url.Values{}
 	params.Set("txid", fmt.Sprintf("%d", job.TxnID))
 	params.Set("to", job.To)
@@ -129,16 +164,15 @@ func processCallback(job CallbackJob) {
 
 	fullURL := callbackURL + "?" + params.Encode()
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Get(fullURL)
+	resp, err := httpClient.Get(fullURL)
 	if err != nil {
 		log.Printf("❌ Callback failed for txnID=%d: %v", job.TxnID, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("✅ Callback completed for txnID=%d: %s", job.TxnID, resp.Status)
+	// Only log periodically to avoid flooding logs with 8 lakh entries
+	if job.TxnID%100 == 0 {
+		log.Printf("✅ Callback Sample (txnID=%d): %s", job.TxnID, resp.Status)
+	}
 }
