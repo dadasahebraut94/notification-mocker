@@ -21,10 +21,20 @@ type SmartPingAPIResponse struct {
 	PDU           int    `json:"pdu"`
 }
 
-var callbackURL string
+type CallbackJob struct {
+	TxnID int64
+	To    string
+	From  string
+	Text  string
+}
+
+var (
+	callbackURL   string
+	callbackQueue = make(chan CallbackJob, 1000000) // Buffer for 1M jobs
+	numWorkers    = 500                             // Number of concurrent workers
+)
 
 func main() {
-
 	// load .env file (for local development)
 	godotenv.Load()
 
@@ -42,35 +52,38 @@ func main() {
 		callbackURL = "http://localhost:5002/api/v1/o/sms/status/smart-ping"
 	}
 
+	// Start worker pool
+	for i := 1; i <= numWorkers; i++ {
+		go worker(i)
+	}
+
 	http.HandleFunc("/fe/api/v1/send", handleSendSMS)
 	http.HandleFunc("/health", healthHandler)
 
-	log.Println("🧪 Mockerservice started")
+	log.Printf("🧪 Mockerservice started with %d workers\n", numWorkers)
 	log.Println("🚀 Listening on port:", port)
 	log.Println("📡 Callback URL:", callbackURL)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
-func handleSendSMS(w http.ResponseWriter, r *http.Request) {
+func worker(id int) {
+	for job := range callbackQueue {
+		processCallback(job)
+	}
+}
 
+func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
-	username := query.Get("username")
 	to := query.Get("to")
 	from := query.Get("from")
 	text := query.Get("text")
-	dltContentId := query.Get("dltContentId")
-
-	log.Println("📥 Send Request Received")
-	log.Println("username:", username)
-	log.Println("to:", to)
-	log.Println("from:", from)
-	log.Println("dltContentId:", dltContentId)
 
 	// generate random transaction ID
 	txnID := rand.Int63n(9000000000) + 1000000000
@@ -87,21 +100,27 @@ func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 
-	// async callback
-	go simulateCallback(txnID, to, from, text)
+	// Queue the callback job
+	callbackQueue <- CallbackJob{
+		TxnID: txnID,
+		To:    to,
+		From:  from,
+		Text:  text,
+	}
 }
 
-func simulateCallback(txnID int64, to, from, text string) {
+func processCallback(job CallbackJob) {
+	// Add random jitter to spread the load (0 to 300 seconds as requested)
+	jitter := time.Duration(rand.Intn(300)) * time.Second
+	time.Sleep(jitter)
 
-	time.Sleep(5 * time.Second)
-
-	log.Printf("🕒 Triggering callback for txnID=%d", txnID)
+	log.Printf("🕒 Triggering callback for txnID=%d (jitter: %v)", job.TxnID, jitter)
 
 	params := url.Values{}
-	params.Set("txid", fmt.Sprintf("%d", txnID))
-	params.Set("to", to)
-	params.Set("from", from)
-	params.Set("text", text)
+	params.Set("txid", fmt.Sprintf("%d", job.TxnID))
+	params.Set("to", job.To)
+	params.Set("from", job.From)
+	params.Set("text", job.Text)
 	params.Set("pdu", "1")
 	params.Set("deliverydt", time.Now().Format("2006-01-02 15:04:05"))
 
@@ -110,18 +129,16 @@ func simulateCallback(txnID int64, to, from, text string) {
 
 	fullURL := callbackURL + "?" + params.Encode()
 
-	log.Println("📡 Callback URL:", fullURL)
-
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 
 	resp, err := client.Get(fullURL)
 	if err != nil {
-		log.Println("❌ Callback failed:", err)
+		log.Printf("❌ Callback failed for txnID=%d: %v", job.TxnID, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Println("✅ Callback completed:", resp.Status)
+	log.Printf("✅ Callback completed for txnID=%d: %s", job.TxnID, resp.Status)
 }
